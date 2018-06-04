@@ -61,8 +61,10 @@ void HttpServerConnection::Start()
 {
 	/* the stream holds an owning reference to this object through the callback we're registering here */
 	m_Stream->RegisterDataHandler(std::bind(&HttpServerConnection::DataAvailableHandler, HttpServerConnection::Ptr(this)));
-	if (m_Stream->IsDataAvailable())
+	if (m_Stream->IsDataAvailable()) {
+		Log(LogCritical, "DEBUG", "DDAH GO!");
 		DataAvailableHandler();
+	}
 }
 
 ApiUser::Ptr HttpServerConnection::GetApiUser() const
@@ -98,11 +100,14 @@ bool HttpServerConnection::ProcessMessage()
 {
 	bool res;
 	HttpResponse response(m_Stream, m_CurrentRequest);
+	Log(LogCritical, "DEBUG", "Process Message");
 
 	if (!m_CurrentRequest.CompleteHeaders) {
 		try {
 			res = m_CurrentRequest.ParseHeaders(m_Context, false);
+			Log(LogCritical, "DEBUG") << "Parse header result: " << res;
 		} catch (const std::invalid_argument& ex) {
+			Log(LogCritical, "DEBUG") << "Parse Header invalid argument exception";
 			response.SetStatus(400, "Bad Request");
 			String msg = String("<h1>Bad Request</h1><p><pre>") + ex.what() + "</pre></p>";
 			response.WriteBody(msg.CStr(), msg.GetLength());
@@ -115,6 +120,7 @@ bool HttpServerConnection::ProcessMessage()
 
 			return false;
 		} catch (const std::exception& ex) {
+			Log(LogCritical, "DEBUG") << "Parse Header other exception";
 			response.SetStatus(500, "Internal Server Error");
 			String msg = "<h1>Internal Server Error</h1><p><pre>" + DiagnosticInformation(ex) + "</pre></p>";
 			response.WriteBody(msg.CStr(), msg.GetLength());
@@ -131,8 +137,10 @@ bool HttpServerConnection::ProcessMessage()
 	}
 
 	if (!m_CurrentRequest.CompleteHeaderCheck) {
+		Log(LogCritical, "DEBUG") << "Complete Header Check";
 		m_CurrentRequest.CompleteHeaderCheck = true;
 		if (!ManageHeaders(response)) {
+			Log(LogCritical, "DEBUG") << "Manage HEaders failed";
 			m_CurrentRequest.~HttpRequest();
 			new (&m_CurrentRequest) HttpRequest(m_Stream);
 
@@ -145,7 +153,9 @@ bool HttpServerConnection::ProcessMessage()
 	if (!m_CurrentRequest.CompleteBody) {
 		try {
 			res = m_CurrentRequest.ParseBody(m_Context, false);
+			Log(LogCritical, "DEBUG") << "Parse body result: " << res;
 		} catch (const std::invalid_argument& ex) {
+			Log(LogCritical, "DEBUG") << "Parse Body invalid argument exception";
 			response.SetStatus(400, "Bad Request");
 			String msg = String("<h1>Bad Request</h1><p><pre>") + ex.what() + "</pre></p>";
 			response.WriteBody(msg.CStr(), msg.GetLength());
@@ -158,6 +168,7 @@ bool HttpServerConnection::ProcessMessage()
 
 			return false;
 		} catch (const std::exception& ex) {
+			Log(LogCritical, "DEBUG") << "Parse Body other exception";
 			response.SetStatus(500, "Internal Server Error");
 			String msg = "<h1>Internal Server Error</h1><p><pre>" + DiagnosticInformation(ex) + "</pre></p>";
 			response.WriteBody(msg.CStr(), msg.GetLength());
@@ -173,6 +184,7 @@ bool HttpServerConnection::ProcessMessage()
 		return res;
 	}
 
+	Log(LogCritical, "DEBUG") << "eq processmessageasync";
 	m_RequestQueue.Enqueue(std::bind(&HttpServerConnection::ProcessMessageAsync,
 		HttpServerConnection::Ptr(this), m_CurrentRequest, response, m_AuthenticatedUser));
 
@@ -332,6 +344,7 @@ void HttpServerConnection::ProcessMessageAsync(HttpRequest& request, HttpRespons
 		HttpUtility::SendJsonError(response, nullptr, 503, "Unhandled exception" , DiagnosticInformation(ex));
 	}
 
+	Log(LogCritical, "DEBUG") << " processmessageasync finished";
 	response.Finish();
 	m_PendingRequests--;
 	m_Stream->SetCorked(false);
@@ -339,6 +352,7 @@ void HttpServerConnection::ProcessMessageAsync(HttpRequest& request, HttpRespons
 
 void HttpServerConnection::DataAvailableHandler()
 {
+	Log(LogCritical, "DEBUG", "Where from?"); /* empty loop body */
 	bool close = false;
 
 	if (!m_Stream->IsEof()) {
@@ -347,8 +361,9 @@ void HttpServerConnection::DataAvailableHandler()
 		m_Stream->SetCorked(true);
 
 		try {
-			while (ProcessMessage())
-				; /* empty loop body */
+			while (ProcessMessage()) {
+			Log(LogWarning, "DEBUG", "PROCESS MESSAGE RETURNED TRUE"); /* empty loop body */
+			}
 		} catch (const std::exception& ex) {
 			Log(LogWarning, "HttpServerConnection")
 				<< "Error while reading Http request: " << DiagnosticInformation(ex);
@@ -360,8 +375,10 @@ void HttpServerConnection::DataAvailableHandler()
 	} else
 		close = true;
 
-	if (close)
+	if (close) {
+		Log(LogWarning, "DEBUG", "data available handler dc"); /* empty loop body */
 		Disconnect();
+	}
 }
 
 void HttpServerConnection::CheckLiveness()

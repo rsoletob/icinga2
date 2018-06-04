@@ -18,48 +18,55 @@
  ******************************************************************************/
 
 #include "remote/apiclient.hpp"
+#include "remote/url.hpp"
+#include "remote/httpclientconnection.hpp"
 #include "base/base64.hpp"
 #include "base/json.hpp"
 #include "base/logger.hpp"
 #include "base/exception.hpp"
 #include "base/convert.hpp"
+#include "base/tcpsocket.hpp"
+#include <boost/scoped_array.hpp>
 
 using namespace icinga;
 
-ApiClient::ApiClient(const String& host, const String& port,
-	String user, String password)
-	: m_Host(host), m_Port(port), m_User(std::move(user)), m_Password(std::move(password))
-{
-	m_Connection->Start();
-}
+ApiClient::ApiClient(const String& host, const String& port, const String& user, const String& password)
+	: m_Host(host), m_Port(port), m_User(user), m_Password(password)
+{ }
 
-TlsStream::Ptr ApiClient::Connect() {
+TlsStream::Ptr ApiClient::Connect(const String& host, const String& port) {
 	TcpSocket::Ptr socket = new TcpSocket();
 	TlsStream::Ptr tlsStream;
 
 	try {
-		socket->Connect(m_Host, m_Port);
-		tlsStream = new TlsStream(socket, m_Host, RoleClient);
+		socket->Connect(host, port);
+		tlsStream = new TlsStream(socket, host, RoleClient);
 		tlsStream->Handshake();
 	} catch (const std::exception& ex) {
 		Log(LogWarning, "ApiClient")
-			<< "Can't connect to Api on host '" << GetHost() << "' port '" << GetPort() << "'.";
+			<< "Can't connect to Api on host '" << host << "' port '" << port << "'.";
 		throw ex;
 	}
 
 	return tlsStream;
 }
 
-Value ApiClient::ExecuteScript(const String& session, const String& command, bool sandboxed,
-	const ExecuteScriptCompletionCallback& callback) const
+Dictionary::Ptr ApiClient::ExecuteScript(const String& session, const String& command, bool sandboxed) const
 {
-	TlsStream::Ptr stream = Connect();
+	TlsStream::Ptr stream = Connect(m_Host, m_Port);
+
+	if (!stream) {
+		Log(LogCritical, "ApiClient", "Failed to open TLS stream.");
+		return nullptr;
+	}
 
 	Url::Ptr url = new Url();
 	url->SetScheme("https");
 	url->SetHost(m_Host);
 	url->SetPort(m_Port);
+
 	url->SetPath({ "v1", "console", "execute-script" });
+
 	std::map<String, std::vector<String> > params;
 	params["session"].push_back(session);
 	params["command"].push_back(command);
@@ -69,11 +76,12 @@ Value ApiClient::ExecuteScript(const String& session, const String& command, boo
 	HttpRequest req(stream);
 	req.RequestMethod = "POST";
 	req.RequestUrl = url;
-	req->AddHeader("Authorization", "Basic " + Base64::Encode(m_User + ":" + m_Password));
-	req->AddHeader("Accept", "application/json");
+	req.AddHeader("Authorization", "Basic " + Base64::Encode(m_User + ":" + m_Password));
+	req.AddHeader("Accept", "application/json");
 
 	try {
-		req.WriteBody(body.CStr(), body.GetLength());
+		//req.WriteBody(body.CStr(), body.GetLength());
+		req.WriteBody("", 0);
 		req.Finish();
 	} catch (const std::exception& ex) {
 		Log(LogWarning, "ApiClient")
@@ -97,20 +105,37 @@ Value ApiClient::ExecuteScript(const String& session, const String& command, boo
 	if (!resp.Complete) {
 		Log(LogWarning, "ApiClient")
 			<< "Failed to read a complete HTTP response from the server.";
-		return;
+		return nullptr;
 	}
 
 	if (resp.StatusCode < 200 || resp.StatusCode > 299) {
-		std::string message = "HTTP request failed; Code: " + Convert::ToString(response.StatusCode) + "; Body: " + body;
+		Log(LogCritical, "ApiClient")
+		    << "Unexpected status code: " << resp.StatusCode;
+		return nullptr;
 
-		BOOST_THROW_EXCEPTION(ScriptError(message));
+		//BOOST_THROW_EXCEPTION(ScriptError(message));
 	}
 
-	result = JsonDecode(body);
 
-	Array::Ptr results = result->Get("results");
-	Value result;
+	size_t responseSize = resp.GetBodySize();
+	boost::scoped_array<char> buffer(new char[responseSize + 1]);
+	resp.ReadBody(buffer.get(), responseSize);
+	buffer.get()[responseSize] = '\0';
+
+	Dictionary::Ptr answer;
+
+	try {
+		answer = JsonDecode(buffer.get());
+	} catch (...) {
+		Log(LogWarning, "ApiClient")
+			<< "Unable to parse JSON response:\n" << buffer.get();
+		return nullptr;
+	}
+
+	Array::Ptr results = answer->Get("results");
 	String errorMessage = "Unexpected result from API.";
+
+	Value result;
 
 	if (results && results->GetLength() > 0) {
 		Dictionary::Ptr resultInfo = results->Get(0);
@@ -136,31 +161,14 @@ Value ApiClient::ExecuteScript(const String& session, const String& command, boo
 	return result;
 }
 
-void ApiClient::ExecuteScriptHttpCompletionCallback(HttpRequest& request,
-	HttpResponse& response, const ExecuteScriptCompletionCallback& callback)
+Array::Ptr ApiClient::AutocompleteScript(const String& session, const String& command, bool sandboxed) const
 {
-	Dictionary::Ptr result;
+	TlsStream::Ptr stream = Connect(m_Host, m_Port);
 
-	String body;
-	char buffer[1024];
-	size_t count;
-
-	while ((count = response.ReadBody(buffer, sizeof(buffer))) > 0)
-		body += String(buffer, buffer + count);
-
-	try {
-	} catch (const std::exception&) {
-		callback(boost::current_exception(), Empty);
-	}
-}
-
-void ApiClient::AutocompleteScript(const String& session, const String& command, bool sandboxed,
-	const AutocompleteScriptCompletionCallback& callback) const
-{
 	Url::Ptr url = new Url();
 	url->SetScheme("https");
-	url->SetHost(m_Connection->GetHost());
-	url->SetPort(m_Connection->GetPort());
+	url->SetHost(m_Host);
+	url->SetPort(m_Port);
 	url->SetPath({ "v1", "console", "auto-complete-script" });
 
 	std::map<String, std::vector<String> > params;
@@ -169,55 +177,73 @@ void ApiClient::AutocompleteScript(const String& session, const String& command,
 	params["sandboxed"].emplace_back(sandboxed ? "1" : "0");
 	url->SetQuery(params);
 
-	try {
-		std::shared_ptr<HttpRequest> req = m_Connection->NewRequest();
-		req->RequestMethod = "POST";
-		req->RequestUrl = url;
-		req->AddHeader("Authorization", "Basic " + Base64::Encode(m_User + ":" + m_Password));
-		req->AddHeader("Accept", "application/json");
-		m_Connection->SubmitRequest(req, std::bind(AutocompleteScriptHttpCompletionCallback, _1, _2, callback));
-	} catch (const std::exception&) {
-		callback(boost::current_exception(), nullptr);
-	}
-}
+	HttpRequest req(stream);
 
-void ApiClient::AutocompleteScriptHttpCompletionCallback(HttpRequest& request,
-	HttpResponse& response, const AutocompleteScriptCompletionCallback& callback)
-{
-	Dictionary::Ptr result;
-
-	String body;
-	char buffer[1024];
-	size_t count;
-
-	while ((count = response.ReadBody(buffer, sizeof(buffer))) > 0)
-		body += String(buffer, buffer + count);
+	req.RequestMethod = "POST";
+	req.RequestUrl = url;
+	req.AddHeader("Authorization", "Basic " + Base64::Encode(m_User + ":" + m_Password));
+	req.AddHeader("Accept", "application/json");
 
 	try {
-		if (response.StatusCode < 200 || response.StatusCode > 299) {
-			std::string message = "HTTP request failed; Code: " + Convert::ToString(response.StatusCode) + "; Body: " + body;
-
-			BOOST_THROW_EXCEPTION(ScriptError(message));
-		}
-
-		result = JsonDecode(body);
-
-		Array::Ptr results = result->Get("results");
-		Array::Ptr suggestions;
-		String errorMessage = "Unexpected result from API.";
-
-		if (results && results->GetLength() > 0) {
-			Dictionary::Ptr resultInfo = results->Get(0);
-			errorMessage = resultInfo->Get("status");
-
-			if (resultInfo->Get("code") >= 200 && resultInfo->Get("code") <= 299)
-				suggestions = resultInfo->Get("suggestions");
-			else
-				BOOST_THROW_EXCEPTION(ScriptError(errorMessage));
-		}
-
-		callback(boost::exception_ptr(), suggestions);
-	} catch (const std::exception&) {
-		callback(boost::current_exception(), nullptr);
+		req.Finish();
+	} catch (const std::exception& ex) {
+		Log(LogWarning, "ApiClient")
+			<< "Cannot write to TCP socket on host '" << m_Host << "' port '" << m_Port << "'.";
+		throw ex;
 	}
+
+	HttpResponse resp(stream, req);
+	StreamReadContext context;
+
+	try {
+		while (resp.Parse(context, true) && !resp.Complete)
+			; /* Do nothing */
+	} catch (const std::exception& ex) {
+		Log(LogWarning, "InfluxdbWriter")
+			<< "Failed to parse HTTP response from host '" << m_Host << "' port '" << m_Port << "': " << DiagnosticInformation(ex);
+		throw ex;
+	}
+
+	if (!resp.Complete) {
+		Log(LogWarning, "ApiClient")
+			<< "Failed to read a complete HTTP response from the server.";
+		return nullptr;
+	}
+
+	size_t responseSize = resp.GetBodySize();
+	boost::scoped_array<char> buffer(new char[responseSize + 1]);
+	resp.ReadBody(buffer.get(), responseSize);
+	buffer.get()[responseSize] = '\0';
+
+	if (resp.StatusCode < 200 || resp.StatusCode > 299) {
+		std::string message = "HTTP request failed; Code: " + Convert::ToString(resp.StatusCode) + "; Body: " + buffer.get();
+
+		BOOST_THROW_EXCEPTION(ScriptError(message));
+	}
+
+	Dictionary::Ptr answer;
+
+	try {
+		answer = JsonDecode(buffer.get());
+	} catch (...) {
+		Log(LogWarning, "ApiClient")
+			<< "Unable to parse JSON response:\n" << buffer.get();
+		return nullptr;
+	}
+
+	Array::Ptr results = answer->Get("results");
+	Array::Ptr suggestions;
+	String errorMessage = "Unexpected result from API.";
+
+	if (results && results->GetLength() > 0) {
+		Dictionary::Ptr resultInfo = results->Get(0);
+		errorMessage = resultInfo->Get("status");
+
+		if (resultInfo->Get("code") >= 200 && resultInfo->Get("code") <= 299)
+			suggestions = resultInfo->Get("suggestions");
+		else
+			BOOST_THROW_EXCEPTION(ScriptError(errorMessage));
+	}
+
+	return suggestions;
 }

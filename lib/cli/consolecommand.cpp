@@ -192,17 +192,7 @@ char *ConsoleCommand::ConsoleCompleteHelper(const char *word, int state)
 			bool ready = false;
 			Array::Ptr suggestions;
 
-			l_ApiClient->AutocompleteScript(l_Session, word, l_ScriptFrame->Sandboxed,
-				std::bind(&ConsoleCommand::AutocompleteScriptCompletionHandler,
-				std::ref(mutex), std::ref(cv), std::ref(ready),
-				_1, _2,
-				std::ref(suggestions)));
-
-			{
-				boost::mutex::scoped_lock lock(mutex);
-				while (!ready)
-					cv.wait(lock);
-			}
+			suggestions = l_ApiClient->AutocompleteScript(l_Session, word, l_ScriptFrame->Sandboxed);
 
 			matches.clear();
 
@@ -439,20 +429,7 @@ incomplete:
 				bool ready = false;
 				boost::exception_ptr eptr;
 
-				l_ApiClient->ExecuteScript(l_Session, command, scriptFrame.Sandboxed,
-					std::bind(&ConsoleCommand::ExecuteScriptCompletionHandler,
-					std::ref(mutex), std::ref(cv), std::ref(ready),
-					_1, _2,
-					std::ref(result), std::ref(eptr)));
-
-				{
-					boost::mutex::scoped_lock lock(mutex);
-					while (!ready)
-						cv.wait(lock);
-				}
-
-				if (eptr)
-					boost::rethrow_exception(eptr);
+				result = l_ApiClient->ExecuteScript(l_Session, command, scriptFrame.Sandboxed);
 			}
 
 			if (commandOnce.IsEmpty()) {
@@ -519,50 +496,4 @@ incomplete:
 	}
 
 	return EXIT_SUCCESS;
-}
-
-void ConsoleCommand::ExecuteScriptCompletionHandler(boost::mutex& mutex, boost::condition_variable& cv,
-	bool& ready, const boost::exception_ptr& eptr, const Value& result, Value& resultOut, boost::exception_ptr& eptrOut)
-{
-	if (eptr) {
-		try {
-			boost::rethrow_exception(eptr);
-		} catch (const ScriptError&) {
-			eptrOut = boost::current_exception();
-		} catch (const std::exception& ex) {
-			Log(LogCritical, "ConsoleCommand")
-				<< "HTTP query failed: " << ex.what();
-			Application::Exit(EXIT_FAILURE);
-		}
-	}
-
-	resultOut = result;
-
-	{
-		boost::mutex::scoped_lock lock(mutex);
-		ready = true;
-		cv.notify_all();
-	}
-}
-
-void ConsoleCommand::AutocompleteScriptCompletionHandler(boost::mutex& mutex, boost::condition_variable& cv,
-	bool& ready, const boost::exception_ptr& eptr, const Array::Ptr& result, Array::Ptr& resultOut)
-{
-	if (eptr) {
-		try {
-			boost::rethrow_exception(eptr);
-		} catch (const std::exception& ex) {
-			Log(LogCritical, "ConsoleCommand")
-				<< "HTTP query failed: " << ex.what();
-			Application::Exit(EXIT_FAILURE);
-		}
-	}
-
-	resultOut = result;
-
-	{
-		boost::mutex::scoped_lock lock(mutex);
-		ready = true;
-		cv.notify_all();
-	}
 }

@@ -36,8 +36,13 @@ HttpRequest::HttpRequest(Stream::Ptr stream)
 
 bool HttpRequest::ParseHeaders(StreamReadContext& src, bool may_wait)
 {
-	if (!m_Stream)
+	Log(LogCritical, "DEBUG")
+		<< "ParseHeader start";
+	if (!m_Stream) {
+	Log(LogCritical, "DEBUG")
+		<< "ParseHeader STREAM CLOSED";
 		return false;
+	}
 
 	if (m_State != HttpRequestStart && m_State != HttpRequestHeaders)
 		BOOST_THROW_EXCEPTION(std::runtime_error("Invalid HTTP state"));
@@ -81,6 +86,8 @@ bool HttpRequest::ParseHeaders(StreamReadContext& src, bool may_wait)
 	} else { // m_State = HttpRequestHeaders
 		if (line == "") {
 			m_State = HttpRequestBody;
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody complete success";
 			CompleteHeaders = true;
 			return true;
 
@@ -106,8 +113,13 @@ bool HttpRequest::ParseHeaders(StreamReadContext& src, bool may_wait)
 
 bool HttpRequest::ParseBody(StreamReadContext& src, bool may_wait)
 {
-	if (!m_Stream)
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody start";
+	if (!m_Stream) {
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody STREAM CLOSED";
 		return false;
+	}
 
 	if (m_State != HttpRequestBody)
 		BOOST_THROW_EXCEPTION(std::runtime_error("Invalid HTTP state"));
@@ -120,6 +132,8 @@ bool HttpRequest::ParseBody(StreamReadContext& src, bool may_wait)
 		m_Body = new FIFO();
 
 	if (Headers->Get("transfer-encoding") == "chunked") {
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody chunked";
 		if (!m_ChunkContext)
 			m_ChunkContext = std::make_shared<ChunkReadContext>(std::ref(src));
 
@@ -161,12 +175,16 @@ bool HttpRequest::ParseBody(StreamReadContext& src, bool may_wait)
 	size_t length_indicator = length_indicator_signed;
 
 	if (src.Size < length_indicator) {
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody read more pls";
 		src.MustRead = true;
 		return false;
 	}
 
 	m_Body->Write(src.Buffer, length_indicator);
 	src.DropData(length_indicator);
+	Log(LogCritical, "DEBUG")
+		<< "ParseBody complete success";
 	CompleteBody = true;
 	return true;
 }
