@@ -513,10 +513,15 @@ void Notification::ExecuteNotificationHelper(NotificationType type, const User::
 			return;
 		}
 
-		command->Execute(this, user, cr, type, author, text);
+		NotificationResult::Ptr nr = new NotificationResult();
+
+		nr->SetExecutionStart(Utility::GetTime());
+
+		command->Execute(this, user, cr, nr, type, author, text);
 
 		/* required by compatlogger */
-		Service::OnNotificationSentToUser(this, GetCheckable(), user, type, cr, author, text, command->GetName(), nullptr);
+		//TODO: pass nr?
+		Checkable::OnNotificationSentToUser(this, GetCheckable(), user, type, cr, author, text, command->GetName(), nullptr);
 
 		Log(LogInformation, "Notification")
 			<< "Completed sending '" << NotificationTypeToStringInternal(type)
@@ -534,6 +539,27 @@ void Notification::ProcessNotificationResult(const NotificationResult::Ptr& nr, 
 {
 	if (!nr)
 		return;
+
+	double now = Utility::GetTime();
+
+	if (nr->GetExecutionStart() == 0)
+		nr->SetExecutionStart(now);
+
+	if (nr->GetExecutionEnd() == 0)
+		nr->SetExecutionEnd(now);
+
+	/* Determine the execution endpoint from a locally executed check. */
+	if (!origin || origin->IsLocal())
+		nr->SetExecutionEndpoint(IcingaApplication::GetInstance()->GetNodeName());
+
+	if (!IsActive())
+		return;
+
+	{
+		ObjectLock olock(this);
+
+		SetLastNotificationResult(nr);
+	}
 
 	/* Notify cluster, API and feature events. */
 	OnNewNotificationResult(this, nr, origin);
