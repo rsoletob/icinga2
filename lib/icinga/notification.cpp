@@ -39,6 +39,7 @@ std::map<String, int> Notification::m_StateFilterMap;
 std::map<String, int> Notification::m_TypeFilterMap;
 
 boost::signals2::signal<void (const Notification::Ptr&, const MessageOrigin::Ptr&)> Notification::OnNextNotificationChanged;
+boost::signals2::signal<void (const Notification::Ptr&, const NotificationResult::Ptr&, const MessageOrigin::Ptr&)> Notification::OnNewNotificationResult;
 
 String NotificationNameComposer::MakeName(const String& shortName, const Object::Ptr& context) const
 {
@@ -527,6 +528,15 @@ void Notification::ExecuteNotificationHelper(NotificationType type, const User::
 			<< "Exception occurred during notification for checkable '"
 			<< GetCheckable()->GetName() << "': " << DiagnosticInformation(ex);
 	}
+}
+
+void Notification::ProcessNotificationResult(const NotificationResult::Ptr& nr, const MessageOrigin::Ptr& origin)
+{
+	if (!nr)
+		return;
+
+	/* Notify cluster, API and feature events. */
+	OnNewNotificationResult(this, nr, origin);
 }
 
 int icinga::ServiceStateToFilter(ServiceState state)
